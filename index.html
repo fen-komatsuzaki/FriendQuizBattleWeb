@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>トモダチ クイズバトル</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Firebase Compat SDK (ローカルファイル file:// からでもブロックされずに動作する形式) -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+    input {
+      user-select: auto;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .animate-spin-custom {
+      animation: spin 1s linear infinite;
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+  <div id="app"></div>
+
+  <script>
+    // Firebase Configuration
+    const firebaseConfig = {
+      apiKey: "AIzaSyDyE2KcT4aQ52JxKpoJAhQHx1eIhgYOIvU",
+      authDomain: "friendquizbattle.firebaseapp.com",
+      projectId: "friendquizbattle",
+      storageBucket: "friendquizbattle.firebasestorage.app",
+      messagingSenderId: "895520767692",
+      appId: "1:895520767692:web:9713d5cb9c8ee676fdcc69"
+    };
+
+    // Firebase 初期化
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
+
+    const APP_ID = 'friend-quiz-battle-web';
+    const EMOJI_LIST = ['🐶', '🐱', '🐰', '🦊', '🐻', '🐼', '🐨', '🐯', '🦁', '🐮', '🐷', '🐸'];
+    const GIST_URL = "https://gist.githubusercontent.com/fen-komatsuzaki/37c7df510445d78adfba5a9ac55095e7/raw/gistfile1.txt";
+    const FALLBACK_QUIZZES = [
+      { id: "f1", questionText: "休日の主な過ごし方はなんでしょう？", minPlayers: 2 },
+      { id: "f2", questionText: "学生時代に一番打ち込んでいたことは？", minPlayers: 2 },
+      { id: "f3", questionText: "もし100万円を一日で自由に使うなら？", minPlayers: 2 },
+      { id: "f4", questionText: "最近一番テンションが上がった出来事は？", minPlayers: 2 },
+      { id: "f5", questionText: "無人島に一つだけ持っていくなら何？", minPlayers: 2 }
+    ];
+
+    // アプリ全体の状態管理
+    const state = {
+      user: null,
+      gameState: 'home', // home, lobby
+      nickname: '',
+      selectedEmoji: '🐶',
+      roomCode: '',
+      joinInputCode: '',
+      showJoinModal: false,
+      roomData: null,
+      errorMsg: '',
+      answerInput: '',
+      localJudgments: {},
+      quizTemplates: FALLBACK_QUIZZES,
+      revealedCount: 0,
+      unsubscribeRoom: null,
+      revealTimer: null
+    };
+
+    // SVGアイコン定義
+    const ICONS = {
+      crown: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m2 4 3 12h14l3-12-6 7-4-7-4 7-6-7zm3 16h14"/></svg>`,
+      crownSm: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m2 4 3 12h14l3-12-6 7-4-7-4 7-6-7zm3 16h14"/></svg>`,
+      userPlus: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" x2="19" y1="8" y2="14"/><line x1="22" x2="16" y1="11" y2="11"/></svg>`,
+      logOut: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>`,
+      users: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
+      play: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`,
+      loader: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="animate-spin-custom"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`,
+      loaderLg: `<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="animate-spin-custom text-orange-400"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`,
+      send: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="11" y1="2" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`,
+      checkCircle: `<svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>`,
+      checkCircleSm: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>`,
+      xCircle: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" x2="9" y1="9" y2="15"/><line x1="9" x2="15" y1="9" y2="15"/></svg>`,
+      xCircleSm: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" x2="9" y1="9" y2="15"/><line x1="9" x2="15" y1="9" y2="15"/></svg>`,
+      check: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`,
+      sparkles: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>`,
+      arrowRight: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" x2="19" y1="12" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>`,
+      trophy: `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>`
+    };
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str).replace(/[&<>"']/g, function(m) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
+      });
+    }
+
+    function formatQuestionText(questionText, targetName) {
+      if (!questionText) return "";
+      if (questionText.includes("〇〇")) {
+        return questionText.replace(/〇〇/g, targetName);
+      }
+      return `${targetName}さんの${questionText}`;
+    }
+
+    // 初期認証 & クイズ取得
+    auth.signInAnonymously().catch(err => {
+      console.error("Auth Error:", err);
+      state.errorMsg = "認証エラー: ネット接続またはFirebase設定を確認してください";
+      render();
+    });
+
+    auth.onAuthStateChanged(u => {
+      if (u) {
+        state.user = u;
+        render();
+      }
+    });
+
+    fetch(GIST_URL)
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data) && data.length > 0) {
+          state.quizTemplates = data;
+        }
+      })
+      .catch(err => console.warn("Gist取得スキップ:", err));
+
+    // 部屋のリアルタイム監視
+    function subscribeRoom(code) {
+      if (state.unsubscribeRoom) state.unsubscribeRoom();
+      const roomRef = db.collection('artifacts').doc(APP_ID).collection('public').doc('data').collection('rooms').doc(code);
+      
+      let prevStatus = null;
+      let prevQuizId = null;
+
+      state.unsubscribeRoom = roomRef.onSnapshot(docSnap => {
+        if (docSnap.exists) {
+          const data = docSnap.data();
+          state.roomData = data;
+
+          if (data.status === 'answering' && (!data.answers || !data.answers[state.user.uid])) {
+            if (prevStatus !== 'answering' || prevQuizId !== data.currentQuiz?.id) {
+              state.answerInput = '';
+            }
+          }
+
+          if ((data.status === 'result' || data.status === 'finalResult') && prevStatus !== data.status) {
+            startRevealAnimation(data.players.length);
+          }
+
+          prevStatus = data.status;
+          prevQuizId = data.currentQuiz?.id;
+          render();
+        } else {
+          state.roomCode = '';
+          state.roomData = null;
+          state.gameState = 'home';
+          render();
+        }
+      });
+    }
+
+    function startRevealAnimation(totalItems) {
+      if (state.revealTimer) clearInterval(state.revealTimer);
+      state.revealedCount = 0;
+      render();
+      let current = 0;
+      state.revealTimer = setInterval(() => {
+        current += 1;
+        state.revealedCount = current;
+        render();
+        if (current >= totalItems) {
+          clearInterval(state.revealTimer);
+        }
+      }, 800);
+    }
+
+    // アクション関数群
+    window.setEmoji = (emoji) => {
+      state.selectedEmoji = emoji;
+      render();
+    };
+
+    window.updateNickname = (val) => {
+      state.nickname = val;
+      const btnCreate = document.getElementById('btn-create');
+      const btnJoin = document.getElementById('btn-join');
+      const valid = val.trim().length > 0 && state.user;
+      if (btnCreate) btnCreate.disabled = !valid;
+      if (btnJoin) btnJoin.disabled = !valid;
+    };
+
+    window.createRoom = async () => {
+      if (!state.nickname.trim() || !state.user) return;
+      state.errorMsg = '';
+      const code = Math.floor(1000 + Math.random() * 9000).toString();
+      const roomRef = db.collection('artifacts').doc(APP_ID).collection('public').doc('data').collection('rooms').doc(code);
+      const initialPlayer = {
+        id: state.user.uid,
+        name: state.nickname.trim(),
+        emoji: state.selectedEmoji,
+        score: 0,
+        isHost: true
+      };
+      try {
+        await roomRef.set({
+          status: 'waiting',
+          players: [initialPlayer],
+          usedQuizIds: [],
+          createdAt: new Date().toISOString()
+        });
+        state.roomCode = code;
+        state.gameState = 'lobby';
+        subscribeRoom(code);
+        render();
+      } catch (e) {
+        console.error(e);
+        state.errorMsg = "ルーム作成に失敗しました";
+        render();
+      }
+    };
+
+    window.openJoinModal = () => {
+      state.errorMsg = '';
+      state.joinInputCode = '';
+      state.showJoinModal = true;
+      render();
+    };
+
+    window.closeJoinModal = () => {
+      state.showJoinModal = false;
+      render();
+    };
+
+    window.updateJoinCode = (val) => {
+      state.joinInputCode = val.replace(/[^0-9]/g, '');
+      const btn = document.getElementById('btn-join-submit');
+      if (btn) btn.disabled = state.joinInputCode.length !== 4;
+    };
+
+    window.joinRoom = async () => {
+      if (!state.nickname.trim() || state.joinInputCode.length !== 4 || !state.user) return;
+      state.errorMsg = '';
+      const code = state.joinInputCode;
+      const roomRef = db.collection('artifacts').doc(APP_ID).collection('public').doc('data').collection('rooms').doc(code);
+      try {
+        const snap = await roomRef.get();
+        if (!snap.exists) {
+          state.errorMsg = "部屋が見つかりません";
+          render();
+          return;
+        }
+        const data = snap.data();
+        if (data.status !== 'waiting') {
+          state.errorMsg = "すでにゲームが始まっています";
+          render();
+          return;
+        }
+        const exists = data.players.some(p => p.id === state.user.uid);
+        if (!exists) {
+          const newPlayer = {
+            id: state.user.uid,
+            name: state.nickname.trim(),
+            emoji: state.selectedEmoji,
+            score: 0,
+            isHost: false
+          };
+          await roomRef.update({
+            players: [...data.players, newPlayer]
+          });
+        }
+        state.roomCode = code;
+        state.showJoinModal = false;
+        state.gameState = 'lobby';
+        subscribeRoom(code);
+        render();
+      } catch (e) {
+        console.error(e);
+        state.errorMsg = "参加に失敗しました";
+        render();
+      }
+    };
+
+    window.leaveRoom = async () => {
+      if (state.unsubscribeRoom) state.unsubscribeRoom();
+      if (state.roomCode && state.roomData && state.user) {
+        const roomRef = db.collection('artifacts').doc(APP_ID).collection('public').doc('data').collection('rooms').doc(state.roomCode);
+        const remaining = state.roomData.players.filter(p => p.id !== state.user.uid);
+        if (remaining.length > 0) {
+          await roomRef.update({ players: remaining }).catch(() => {});
+        }
+      }
+      state.roomCode = '';
+      state.roomData = null;
+      state.gameState = 'home';
+      render();
+    };
+
+    window.startGame = async () => {
+      if (!state.roomData || !state.user) return;
+      const total = state.roomData.players.length;
+      let usedIds = state.roomData.usedQuizIds || [];
+      let valid = state.quizTemplates.filter(t => t.minPlayers <= total && !usedIds.includes(t.id));
+      if (valid.length === 0) {
+        usedIds = [];
+        valid = state.quizTemplates.filter(t => t.minPlayers <= total);
+        if (valid.length === 0) valid = FALLBACK_QUIZZES;
+      }
+      const selected = valid[Math.floor(Math.random() * valid.length)];
+      const targetPlayer = state.roomData.players[Math.floor(Math.random() * state.roomData.players.length)];
+
+      state.answerInput = '';
+      state.localJudgments = {};
+
+      const roomRef = db.collection('artifacts').doc(APP_ID).collection('public').doc('data').collection('rooms').doc(state.roomCode);
+      await roomRef.update({
+        status: 'answering',
+        currentQuiz: {
+          id: Date.now().toString(),
+          targetPlayerId: targetPlayer.id,
+          questionText: selected.questionText
+        },
+        usedQuizIds: [...usedIds, selected.id],
+        answers: {},
+        judgments: {}
+      });
+    };
+
+    window.updateAnswerInput = (val) => {
+      state.answerInput = val;
+      const btn = document.getElementById('btn-submit-answer');
+      if (btn) btn.disabled = !val.trim();
+    };
+
+    window.submitAnswer = async () => {
+      if (!state.answerInput.trim() || !state.roomData || !state.user) return;
+      const roomRef = db.collection('artifacts').doc(APP_ID).collection('public').doc('data').collection('rooms').doc(state.roomCode);
+      const newAnswers = { ...(state.roomData.answers || {}), [state.user.uid]: state.answerInput.trim() };
+      const nextStatus = Object.keys(newAnswers).length >= state.roomData.players.length ? 'judging' : 'answering';
+      await roomRef.update({
+        answers: newAnswers,
+        status: nextStatus
+      });
+    };
+
+    window.setJudgment = (playerId, isCorrect) => {
+      const cur = state.localJudgments[playerId] || { isCorrect: false, bonus: 0 };
+      state.localJudgments[playerId] = { ...cur, isCorrect };
+      render();
+    };
+
+    window.changeBonus = (playerId, delta) => {
+      const cur = state.localJudgments[playerId] || { isCorrect: false, bonus: 0 };
+      const nextBonus = Math.max(0, Math.min(50, (cur.bonus || 0) + delta));
+      state.localJudgments[playerId] = { ...cur, bonus: nextBonus };
+      render();
+    };
+
+    window.submitJudgments = async () => {
+      if (!state.roomData) return;
+      const roomRef = db.collection('artifacts').doc(APP_ID).collection('public').doc('data').collection('rooms').doc(state.roomCode);
+      const updatedPlayers = state.roomData.players.map(p => {
+        const j = state.localJudgments[p.id];
+        if (j) {
+          return { ...p, score: p.score + (j.isCorrect ? 10 : 0) + (j.bonus || 0) };
+        }
+        return p;
+      });
+      await roomRef.update({
+        status: 'result',
+        judgments: state.localJudgments,
+        players: updatedPlayers
+      });
+    };
+
+    window.endGame = async () => {
+      if (!state.roomData) return;
+      const roomRef = db.collection('artifacts').doc(APP_ID).collection('public').doc('data').collection('rooms').doc(state.roomCode);
+      await roomRef.update({ status: 'finalResult' });
+    };
+
+    // 画面描画エンジン
+    function render() {
+      const app = document.getElementById('app');
+      if (!app) return;
+
+      // 1. HOME VIEW
+      if (state.gameState === 'home') {
+        const isInputValid = state.nickname.trim().length > 0 && state.user;
+        app.innerHTML = `
+          <div class="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6">
+            <div class="text-center mb-10">
+              <p class="text-orange-500 font-bold text-sm mb-1">誰が一番わかってる？</p>
+              <h1 class="text-4xl font-black text-orange-500 tracking-tight leading-none">トモダチ</h1>
+              <h1 class="text-5xl font-black text-slate-800 tracking-tight leading-tight">クイズバトル</h1>
+            </div>
+
+            <div class="w-full max-w-sm bg-white p-6 rounded-3xl shadow-lg border border-slate-100 mb-8">
+              <p class="text-xs font-bold text-slate-400 text-center mb-4">プレイヤー情報</p>
+              <div class="flex items-center space-x-4 mb-4">
+                <div class="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center text-4xl shadow-inner shrink-0">
+                  ${state.selectedEmoji}
+                </div>
+                <input
+                  type="text"
+                  placeholder="ニックネーム"
+                  value="${escapeHtml(state.nickname)}"
+                  oninput="updateNickname(this.value)"
+                  maxlength="10"
+                  class="w-full h-14 px-4 bg-slate-100 rounded-xl font-bold text-lg text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-400"
+                />
+              </div>
+              <div class="grid grid-cols-6 gap-2 pt-2 border-t border-slate-100">
+                ${EMOJI_LIST.map(emoji => `
+                  <button
+                    onclick="setEmoji('${emoji}')"
+                    class="text-2xl p-1.5 rounded-lg transition-transform ${state.selectedEmoji === emoji ? 'bg-orange-100 scale-110 ring-2 ring-orange-400' : 'hover:bg-slate-50'}"
+                  >${emoji}</button>
+                `).join('')}
+              </div>
+            </div>
+
+            ${state.errorMsg ? `<p class="text-red-500 text-xs font-bold mb-4 text-center">${escapeHtml(state.errorMsg)}</p>` : ''}
+
+            <div class="w-full max-w-sm space-y-4">
+              <button
+                id="btn-create"
+                onclick="createRoom()"
+                ${!isInputValid ? 'disabled' : ''}
+                class="w-full bg-orange-500 text-white font-bold text-lg h-14 rounded-2xl shadow-md flex items-center justify-center space-x-2 disabled:opacity-40 active:scale-95 transition-all"
+              >
+                ${ICONS.crown}
+                <span>グループを作る (ホスト)</span>
+              </button>
+
+              <button
+                id="btn-join"
+                onclick="openJoinModal()"
+                ${!isInputValid ? 'disabled' : ''}
+                class="w-full bg-sky-500 text-white font-bold text-lg h-14 rounded-2xl shadow-md flex items-center justify-center space-x-2 disabled:opacity-40 active:scale-95 transition-all"
+              >
+                ${ICONS.userPlus}
+                <span>グループに参加 (ゲスト)</span>
+              </button>
+            </div>
+
+            ${state.showJoinModal ? `
+              <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                <div class="bg-white w-full max-w-xs p-6 rounded-3xl shadow-xl">
+                  <h3 class="text-lg font-black text-slate-800 text-center mb-2">部屋コードを入力</h3>
+                  <p class="text-xs text-slate-500 text-center mb-4">ホストの画面に表示されている4桁の数字</p>
+                  <input
+                    type="tel"
+                    maxlength="4"
+                    placeholder="1234"
+                    value="${escapeHtml(state.joinInputCode)}"
+                    oninput="updateJoinCode(this.value)"
+                    class="w-full h-14 text-center text-3xl font-black tracking-widest bg-slate-100 rounded-xl mb-4 focus:outline-none focus:ring-2 focus:ring-sky-400"
+                  />
+                  ${state.errorMsg ? `<p class="text-red-500 text-xs font-bold text-center mb-3">${escapeHtml(state.errorMsg)}</p>` : ''}
+                  <div class="flex space-x-2">
+                    <button onclick="closeJoinModal()" class="flex-1 py-3 rounded-xl font-bold text-slate-500 bg-slate-100">キャンセル</button>
+                    <button id="btn-join-submit" onclick="joinRoom()" ${state.joinInputCode.length !== 4 ? 'disabled' : ''} class="flex-1 py-3 rounded-xl font-bold text-white bg-sky-500 disabled:opacity-40">参加する</button>
+                  </div>
+                </div>
+              </div>
+            ` : ''}
+          </div>
+        `;
+        return;
+      }
+
+      const roomData = state.roomData;
+
+      // 2. LOBBY VIEW
+      if (state.gameState === 'lobby' && (!roomData || roomData.status === 'waiting')) {
+        const players = roomData?.players || [];
+        const isHost = players.find(p => p.id === state.user?.uid)?.isHost;
+        app.innerHTML = `
+          <div class="min-h-screen bg-slate-50 flex flex-col p-6">
+            <div class="flex justify-between items-center mb-6">
+              <button onclick="leaveRoom()" class="flex items-center space-x-1 text-slate-400 font-bold text-sm">
+                ${ICONS.logOut}
+                <span>やめる</span>
+              </button>
+              <div class="bg-orange-100 text-orange-600 px-3 py-1 rounded-full text-xs font-black tracking-wider">
+                ROOM: ${state.roomCode}
+              </div>
+            </div>
+
+            <div class="text-center mb-8">
+              <div class="inline-block bg-white px-8 py-4 rounded-3xl shadow-sm border border-orange-100 mb-4">
+                <p class="text-xs font-bold text-slate-400 mb-1">合言葉（部屋コード）</p>
+                <p class="text-4xl font-black text-orange-500 tracking-widest">${state.roomCode}</p>
+              </div>
+              <h2 class="text-xl font-black text-slate-800">
+                ${isHost ? "友達の参加を待っています..." : "ホストの開始を待っています..."}
+              </h2>
+            </div>
+
+            <div class="flex-1 w-full max-w-md mx-auto">
+              <div class="flex items-center space-x-2 text-slate-500 font-bold text-sm mb-3">
+                ${ICONS.users}
+                <span>参加プレイヤー (${players.length}人)</span>
+              </div>
+              <div class="space-y-3">
+                ${players.map(p => `
+                  <div class="bg-white p-3.5 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between">
+                    <div class="flex items-center space-x-3">
+                      <span class="text-3xl">${p.emoji}</span>
+                      <span class="font-bold text-slate-800">${escapeHtml(p.name)}</span>
+                    </div>
+                    ${p.isHost ? `
+                      <span class="bg-gradient-to-r from-orange-400 to-red-500 text-white text-xs font-black px-3 py-1 rounded-full flex items-center space-x-1">
+                        ${ICONS.crownSm}
+                        <span>HOST</span>
+                      </span>
+                    ` : ''}
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+
+            <div class="w-full max-w-md mx-auto mt-6">
+              ${isHost ? `
+                <button onclick="startGame()" ${players.length < 2 ? 'disabled' : ''} class="w-full bg-orange-500 text-white font-bold text-lg h-14 rounded-2xl shadow-md flex items-center justify-center space-x-2 disabled:opacity-40 active:scale-95 transition-all">
+                  ${ICONS.play}
+                  <span>ゲームを始める！</span>
+                </button>
+              ` : `
+                <div class="flex items-center justify-center space-x-2 text-slate-500 font-bold text-sm py-4">
+                  <span class="text-orange-500">${ICONS.loader}</span>
+                  <span>ホストがゲームを開始するのを待っています...</span>
+                </div>
+              `}
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      // 3. ANSWERING VIEW
+      if (state.gameState === 'lobby' && roomData?.status === 'answering') {
+        const targetPlayer = roomData.players.find(p => p.id === roomData.currentQuiz?.targetPlayerId);
+        const isTarget = state.user?.uid === targetPlayer?.id;
+        const hasSubmitted = Boolean(roomData.answers && roomData.answers[state.user?.uid]);
+        const submittedCount = Object.keys(roomData.answers || {}).length;
+        const qText = targetPlayer ? formatQuestionText(roomData.currentQuiz?.questionText, targetPlayer.name) : roomData.currentQuiz?.questionText;
+
+        app.innerHTML = `
+          <div class="min-h-screen flex flex-col p-6 ${isTarget ? 'bg-sky-50' : 'bg-slate-50'}">
+            <div class="flex flex-col items-center mt-4 mb-6">
+              <div class="w-20 h-20 rounded-full bg-orange-100 border-2 border-orange-400 flex items-center justify-center text-5xl mb-2 shadow-sm">
+                ${targetPlayer?.emoji || ''}
+              </div>
+              <h2 class="text-xl font-black text-slate-800">${escapeHtml(targetPlayer?.name)}さんクイズ！</h2>
+            </div>
+
+            <div class="w-full max-w-md mx-auto bg-white p-6 rounded-3xl shadow-sm mb-6 flex flex-col items-center border border-slate-100">
+              <div class="text-xs font-bold px-3 py-1 rounded-md mb-4 ${isTarget ? 'bg-sky-500 text-white' : 'bg-orange-100 text-orange-600'}">
+                ${isTarget ? "【あなたへのお題】" : "【みんなで予想しよう！】"}
+              </div>
+              <p class="text-xl font-bold text-slate-800 text-center leading-relaxed">${escapeHtml(qText)}</p>
+            </div>
+
+            <div class="w-full max-w-md mx-auto flex-1">
+              ${!hasSubmitted ? `
+                <div class="space-y-4">
+                  <p class="text-sm font-bold text-slate-500 text-center">
+                    ${isTarget ? "模範解答（あなたの正解）を入力してください" : "回答を入力してください"}
+                  </p>
+                  <input
+                    type="text"
+                    placeholder="${isTarget ? "例: ラーメン" : "例: 焼肉かな？"}"
+                    value="${escapeHtml(state.answerInput)}"
+                    oninput="updateAnswerInput(this.value)"
+                    class="w-full h-14 px-4 bg-white rounded-2xl shadow-sm border border-slate-200 font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-400"
+                  />
+                  <button
+                    id="btn-submit-answer"
+                    onclick="submitAnswer()"
+                    ${!state.answerInput.trim() ? 'disabled' : ''}
+                    class="w-full text-white font-bold text-lg h-14 rounded-2xl shadow-md flex items-center justify-center space-x-2 disabled:opacity-40 active:scale-95 transition-all ${isTarget ? 'bg-sky-500' : 'bg-orange-500'}"
+                  >
+                    ${ICONS.send}
+                    <span>${isTarget ? "自分の正解を送信" : "予想を送信する"}</span>
+                  </button>
+                </div>
+              ` : `
+                <div class="bg-white p-8 rounded-3xl shadow-sm border border-slate-100 text-center space-y-4">
+                  <div class="flex justify-center ${isTarget ? 'text-sky-500' : 'text-green-500'}">${ICONS.checkCircle}</div>
+                  <h3 class="text-lg font-black text-slate-800">回答を送信しました！</h3>
+                  <p class="text-sm text-slate-500">
+                    全員の回答が出揃うのを待っています... (${submittedCount} / ${roomData.players.length}人)
+                  </p>
+                </div>
+              `}
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      // 4. JUDGING VIEW
+      if (state.gameState === 'lobby' && roomData?.status === 'judging') {
+        const targetPlayer = roomData.players.find(p => p.id === roomData.currentQuiz?.targetPlayerId);
+        const isTarget = state.user?.uid === targetPlayer?.id;
+        const targetAnswer = roomData.answers?.[targetPlayer?.id];
+        const otherPlayers = roomData.players.filter(p => p.id !== targetPlayer?.id);
+
+        app.innerHTML = `
+          <div class="min-h-screen bg-slate-50 flex flex-col p-4">
+            <div class="text-center mt-6 mb-6">
+              <h2 class="text-2xl font-black text-slate-800">${escapeHtml(targetPlayer?.name)}さんによる判定タイム！</h2>
+              <p class="text-orange-500 font-bold text-sm mt-2">お題: ${escapeHtml(roomData.currentQuiz?.questionText)}</p>
+
+              ${isTarget ? `
+                <div class="mt-4 inline-block bg-white border-2 border-orange-200 rounded-xl px-5 py-3 shadow-sm">
+                  <span class="text-xs font-bold text-slate-400 block mb-1">あなたの正解</span>
+                  <span class="text-lg font-black text-slate-800">「${escapeHtml(targetAnswer)}」</span>
+                </div>
+              ` : ''}
+            </div>
+
+            ${isTarget ? `
+              <div class="flex-1 w-full max-w-md mx-auto space-y-4 pb-24">
+                ${otherPlayers.map(p => {
+                  const curJ = state.localJudgments[p.id] || { isCorrect: false, bonus: 0 };
+                  return `
+                    <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+                      <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center space-x-2">
+                          <span class="text-2xl">${p.emoji}</span>
+                          <span class="font-bold text-slate-700">${escapeHtml(p.name)}</span>
+                        </div>
+                        <span class="text-base font-bold text-orange-500">${escapeHtml(roomData.answers?.[p.id] || "未回答")}</span>
+                      </div>
+                      <hr class="border-slate-100 my-2" />
+                      <div class="flex items-center justify-between mt-2">
+                        <span class="text-sm font-bold text-slate-600">判定:</span>
+                        <div class="flex space-x-2">
+                          <button onclick="setJudgment('${p.id}', false)" class="flex items-center justify-center space-x-1 px-4 py-2 rounded-lg text-sm font-bold border transition-all ${!curJ.isCorrect ? 'bg-red-500 text-white border-red-500 shadow-sm' : 'bg-red-50 text-red-500 border-red-200'}">
+                            ${ICONS.xCircle}
+                            <span>不正解</span>
+                          </button>
+                          <button onclick="setJudgment('${p.id}', true)" class="flex items-center justify-center space-x-1 px-4 py-2 rounded-lg text-sm font-bold border transition-all ${curJ.isCorrect ? 'bg-green-500 text-white border-green-500 shadow-sm' : 'bg-green-50 text-green-600 border-green-200'}">
+                            ${ICONS.check}
+                            <span>正解</span>
+                          </button>
+                        </div>
+                      </div>
+                      <div class="flex items-center justify-between mt-4 pt-3 border-t border-slate-100">
+                        <span class="text-sm font-bold text-slate-600">おまけポイント:</span>
+                        <div class="flex items-center space-x-3">
+                          <button onclick="changeBonus('${p.id}', -5)" ${curJ.bonus <= 0 ? 'disabled' : ''} class="w-8 h-8 rounded-lg bg-slate-100 font-bold text-slate-600 disabled:opacity-30 active:scale-95">-</button>
+                          <span class="font-black text-slate-800 w-12 text-center">${curJ.bonus} pt</span>
+                          <button onclick="changeBonus('${p.id}', 5)" ${curJ.bonus >= 50 ? 'disabled' : ''} class="w-8 h-8 rounded-lg bg-slate-100 font-bold text-slate-600 disabled:opacity-30 active:scale-95">+</button>
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+                <button onclick="submitJudgments()" class="w-full bg-gradient-to-r from-orange-400 to-orange-500 text-white font-bold text-lg h-14 rounded-xl shadow-lg mt-8 active:scale-95 transition-all">
+                  結果を発表する！
+                </button>
+              </div>
+            ` : `
+              <div class="flex-1 flex flex-col items-center justify-center mt-10">
+                <div class="mb-6">${ICONS.loaderLg}</div>
+                <p class="font-bold text-slate-700 text-lg text-center">${escapeHtml(targetPlayer?.name)}さんが各回答を判定中です...</p>
+                <p class="text-orange-500 font-bold text-sm mt-3">おまけポイントもあるかも...！？</p>
+              </div>
+            `}
+          </div>
+        `;
+        return;
+      }
+
+      // 5. RESULT VIEW
+      if (state.gameState === 'lobby' && roomData?.status === 'result') {
+        const isHost = roomData.players.find(p => p.id === state.user?.uid)?.isHost;
+        const targetPlayer = roomData.players.find(p => p.id === roomData.currentQuiz?.targetPlayerId);
+        const targetAnswer = roomData.answers?.[targetPlayer?.id];
+        const otherPlayers = roomData.players.filter(p => p.id !== targetPlayer?.id);
+        const isAnimationFinished = state.revealedCount >= roomData.players.length;
+
+        app.innerHTML = `
+          <div class="min-h-screen bg-slate-50 flex flex-col p-4 pb-36">
+            <h2 class="text-2xl font-black text-slate-800 text-center mt-6 mb-8 transition-opacity duration-500 ${state.revealedCount >= 1 ? 'opacity-100' : 'opacity-0'}">
+              みんなの回答！
+            </h2>
+
+            <div class="bg-orange-50 border-2 border-orange-200 rounded-3xl p-6 text-center mb-8 relative transition-all duration-500 ${state.revealedCount >= 1 ? 'opacity-100 scale-100' : 'opacity-0 scale-90'}">
+              <div class="absolute -top-4 left-1/2 -translate-x-1/2 bg-orange-500 text-white text-xs font-bold px-3 py-1 rounded-full shadow-sm">
+                ${escapeHtml(targetPlayer?.name)}さんの正解
+              </div>
+              <p class="text-3xl font-black text-slate-800 mt-2">${escapeHtml(targetAnswer)}</p>
+            </div>
+
+            <div class="flex-1 w-full max-w-md mx-auto space-y-4">
+              ${otherPlayers.map((p, idx) => {
+                const j = roomData.judgments?.[p.id] || {};
+                const bonus = j.bonus || 0;
+                const totalPt = (j.isCorrect ? 10 : 0) + bonus;
+                const isRevealed = state.revealedCount >= idx + 2;
+                return `
+                  <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 transition-all duration-500 ${isRevealed ? 'opacity-100 scale-100 translate-y-0' : 'opacity-0 scale-90 translate-y-4'}">
+                    <div class="flex justify-between items-start mb-2">
+                      <div class="flex items-center space-x-2">
+                        <span class="text-2xl">${p.emoji}</span>
+                        <span class="font-bold text-slate-700">${escapeHtml(p.name)}</span>
+                      </div>
+                      ${totalPt > 0 ? `<div class="text-orange-500 font-bold bg-orange-50 px-2.5 py-1 rounded-md text-sm">+${totalPt} pt GET!</div>` : ''}
+                    </div>
+                    <div class="text-lg font-medium text-slate-800 ml-9 mb-2">${escapeHtml(roomData.answers?.[p.id] || "未回答")}</div>
+                    <div class="ml-9 flex items-center space-x-3">
+                      ${j.isCorrect ? `
+                        <span class="text-green-600 font-bold text-xs flex items-center space-x-1">${ICONS.checkCircleSm}<span>大正解 (+10pt)</span></span>
+                      ` : `
+                        <span class="text-red-500 font-bold text-xs flex items-center space-x-1">${ICONS.xCircleSm}<span>不正解</span></span>
+                      `}
+                      ${bonus > 0 ? `
+                        <span class="text-orange-500 font-bold text-xs flex items-center space-x-1">${ICONS.sparkles}<span>おまけ: +${bonus}pt</span></span>
+                      ` : ''}
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+
+            ${isAnimationFinished ? (
+              isHost ? `
+                <div class="fixed bottom-0 left-0 right-0 p-4 bg-white/90 backdrop-blur-md border-t border-slate-200 flex flex-col space-y-3 z-50">
+                  <button onclick="startGame()" class="w-full max-w-md mx-auto bg-orange-500 text-white font-bold text-lg h-14 rounded-xl shadow-md flex items-center justify-center space-x-2 active:scale-95 transition-all">
+                    <span>次の問題へ！</span>
+                    ${ICONS.arrowRight}
+                  </button>
+                  <button onclick="endGame()" class="w-full max-w-md mx-auto text-slate-500 font-bold text-sm py-2 hover:bg-slate-100 rounded-lg transition-colors">
+                    ゲームを終了して結果発表へ
+                  </button>
+                </div>
+              ` : `
+                <div class="fixed bottom-0 left-0 right-0 p-6 bg-white/90 backdrop-blur-md border-t border-slate-200 text-center z-50">
+                  <p class="text-slate-500 font-bold text-sm">ホストが次の操作を選んでいます...</p>
+                </div>
+              `
+            ) : ''}
+          </div>
+        `;
+        return;
+      }
+
+      // 6. FINAL RESULT VIEW
+      if (state.gameState === 'lobby' && roomData?.status === 'finalResult') {
+        const rankedPlayers = [...roomData.players].sort((a, b) => b.score - a.score);
+        const totalCount = rankedPlayers.length;
+        const isAnimationFinished = state.revealedCount >= totalCount;
+
+        app.innerHTML = `
+          <div class="min-h-screen bg-slate-50 flex flex-col p-4 pb-28">
+            <div class="flex items-center justify-center space-x-2 mt-8 mb-6 text-orange-500">
+              ${ICONS.trophy}
+              <h2 class="text-3xl font-black text-slate-800">最終結果発表</h2>
+            </div>
+
+            <div class="flex-1 w-full max-w-md mx-auto space-y-4">
+              ${rankedPlayers.map((p, index) => {
+                const isWinner = index === 0;
+                const revealOrder = totalCount - index;
+                const isRevealed = state.revealedCount >= revealOrder;
+                return `
+                  <div class="rounded-2xl p-5 transition-all duration-500 ${isWinner ? 'bg-gradient-to-br from-yellow-100 to-orange-100 border-2 border-orange-400 shadow-lg' : 'bg-white border border-slate-100 shadow-sm'} ${isRevealed ? 'opacity-100 scale-100' : 'opacity-0 scale-90'}">
+                    ${isWinner ? `
+                      <div class="flex justify-center mb-3">
+                        <span class="bg-gradient-to-r from-orange-400 to-red-500 text-white text-xs font-black px-4 py-1.5 rounded-full flex items-center space-x-1 shadow-sm">
+                          ${ICONS.crownSm}
+                          <span>最高のベストフレンド</span>
+                        </span>
+                      </div>
+                    ` : ''}
+                    <div class="flex items-center justify-between">
+                      <div class="flex items-center space-x-3">
+                        <span class="font-black w-10 ${isWinner ? 'text-2xl text-orange-500' : 'text-lg text-slate-400'}">${index + 1}位</span>
+                        <span class="${isWinner ? 'text-4xl' : 'text-3xl'}">${p.emoji}</span>
+                        <span class="font-bold ${isWinner ? 'text-xl text-slate-900' : 'text-lg text-slate-700'}">${escapeHtml(p.name)}</span>
+                      </div>
+                      <span class="font-black ${isWinner ? 'text-2xl text-red-500' : 'text-xl text-orange-500'}">${p.score} pt</span>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+
+            ${isAnimationFinished ? `
+              <div class="w-full max-w-md mx-auto mt-6">
+                <button onclick="leaveRoom()" class="w-full bg-orange-500 text-white font-bold text-lg h-14 rounded-xl shadow-md flex items-center justify-center active:scale-95 transition-all">
+                  ホームに戻る
+                </button>
+              </div>
+            ` : ''}
+          </div>
+        `;
+        return;
+      }
+    }
+
+    // 初回描画
+    render();
+  </script>
+</body>
+</html>
